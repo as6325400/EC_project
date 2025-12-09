@@ -43,46 +43,46 @@ vector<RIS> RIS_Array;
 double alpha, beta;
 QAN qan;
 
-double dis(site &a, site &b){
+double dis(const site &a, const site &b){
   return sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2));
 }
 
-double Pe(int UID, int RID){
+double Pe(const UD &ud, const RIS *ris){
   double d;
-  if(RID == -1) d = dis(UD_Array[UID], qan);
-  else d = dis(qan, RIS_Array[RID]) + dis(RIS_Array[RID], UD_Array[UID]);
+  if(ris == nullptr) d = dis(ud, qan);
+  else d = dis(qan, *ris) + dis(*ris, ud);
   return exp(-1 * alpha * d);
 }
 
-double Fe(int UID, int RID){
+double Fe(const UD &ud, const RIS *ris){
   double d;
-  if(RID == -1) d = dis(UD_Array[UID], qan);
-  else d = dis(qan, RIS_Array[RID]) + dis(RIS_Array[RID], UD_Array[UID]);
+  if(ris == nullptr) d = dis(ud, qan);
+  else d = dis(qan, *ris) + dis(*ris, ud);
   return 0.5 + 0.5 * exp(-1 * ::beta * d);
 }
 
-double Pp(double f1, double f2){
+double Pp(const double &f1, const double &f2){
   return f1 * f2 + (1 - f1) * (1 - f2);
 }
 
-double Fp(double f1, double f2){
+double Fp(const double &f1, const double &f2){
   return (f1 * f2) / (f1 * f2 + (1 - f1) * (1 - f2));
 }
 
-double F(int UID, int RID, int n){
-  if(n == 0) return Fe(UID, RID);
-  return Fp(F(UID, RID, n - 1), Fe(UID, RID));
+double F(const UD &ud, const RIS *ris, int n){
+  if(n == 0) return Fe(ud, ris);
+  return Fp(F(ud, ris, n - 1), Fe(ud, ris));
 }
 
-double P(int UID, int RID, int n){
+double P(const UD &ud, const RIS *ris, int n){
   if(n == 0) return 1;
-  return Pp(F(UID, RID, n - 1), Fe(UID, RID)) * P(UID, RID, n - 1);
+  return Pp(F(ud, ris, n - 1), Fe(ud, ris)) * P(ud, ris, n - 1);
 }
 
-int N(int UID, int RID){
+int N(const UD &ud, const RIS *ris){
   int ans = 0;
   for(int i = 0; ;i++){
-    if(F(UID, RID, i) >= UD_Array[UID].fidelity_th){
+    if(F(ud, ris, i) >= ud.fidelity_th){
       ans = i;
       break;
     }
@@ -90,8 +90,9 @@ int N(int UID, int RID){
   return ans;
 }
 
-double S(int UID, int RID){
-  return (UD_Array[UID].exp_rate / Pe(UID, RID)) * ((N(UID, RID) + 1) / P(UID, RID, N(UID, RID))); 
+double S(const UD &ud, const RIS *ris){
+  int rounds = N(ud, ris);
+  return (ud.exp_rate / Pe(ud, ris)) * ((rounds + 1) / P(ud, ris, rounds)); 
 }
 
 int main(){
@@ -128,27 +129,32 @@ int main(){
   int accept_UD = 0;
   vector<pair<int, int>> accept_UD_list;
   vector<bool> used(RISs, false);
+  sort(UD_Array.begin(), UD_Array.end(),
+     [](const UD &a, const UD &b){
+        return a.profit > b.profit;
+     });
   for(int i = 0; i < UDs; i++){
-    auto ud = UD_Array[i];
-    double cost = 1e18;
+    auto &ud = UD_Array[i];
+    double cost = 1e9;
     int min_cost_id = -1;
-    for(int j = -1; j < RISs; j++){
-      if(j == -1 and !ud.can_coverage) continue;
-      if(j >= 0 and RIS_Array[j].coverage_UDs.count(i) == 0) continue;
-      if(j >= 0 and used[j]) continue;
-      if(S(i, j) < cost){
-        cost = S(i, j);
-        min_cost_id = j;
+    if(ud.can_coverage) cost = S(ud, nullptr);
+    for(int j = 0; j < RISs; j++){
+      auto &ris = RIS_Array[j];
+      if(j >= 0 and ris.coverage_UDs.count(ud.id) == 0) continue;
+      if(j >= 0 and used[ris.id]) continue;
+      double candidate_cost = S(ud, &ris);
+      if(candidate_cost < cost){
+        cost = candidate_cost;
+        min_cost_id = ris.id;
       }
     }
     if(qan.ent_gen_rate >= ceil(cost)){
       accept_UD++;
       qan.ent_gen_rate -= ceil(cost);
-      accept_UD_list.push_back({i, min_cost_id});
+      accept_UD_list.push_back({ud.id, min_cost_id});
       if(min_cost_id != -1) used[min_cost_id] = true;
     }
   }
-
   cout << accept_UD << '\n';
   for(auto [idx, rid]:accept_UD_list){
     cout << idx << ' ' << rid << '\n';
