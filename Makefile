@@ -1,4 +1,4 @@
-CXX := g++-14
+CXX := g++
 CXXFLAGS := -std=c++17 -O2 -pipe -Wall -Wextra -Wshadow -Wconversion
 
 SRC_DIR := src
