@@ -7,6 +7,7 @@
 namespace {
 
 constexpr double EPS = 1e-12;
+constexpr int MAX_PURIFICATION_ROUNDS = 60;
 
 double distance(const site& a, const site& b) {
     const double dx = a.x - b.x;
@@ -38,6 +39,9 @@ int required_rounds(double dis, double fidelity_threshold, double beta) {
     while (current + EPS < fidelity_threshold && current + EPS < 1.0) {
         current = purification_fidelity(current, base_fidelity);
         ++rounds;
+        if (rounds > MAX_PURIFICATION_ROUNDS) {
+            return -1;
+        }
     }
     return rounds;
 }
@@ -64,6 +68,9 @@ double compute_cost(const ProblemData& problem, const UD& ud, const RIS& ris) {
     }
     const double pe = link_success_prob(dis, problem.alpha);
     const int rounds = required_rounds(dis, ud.fidelity_th, problem.beta);
+    if (rounds < 0) {
+        return std::numeric_limits<double>::infinity();
+    }
     const double purify_prob = purification_probability_product(dis, rounds, problem.beta);
     const double required = ud.exp_rate / pe * (rounds + 1.0) / purify_prob;
     return std::ceil(required - EPS);
@@ -115,6 +122,7 @@ ProblemData load_problem(std::istream& in) {
         problem.uds.size(),
         std::vector<double>(problem.riss.size(), INF)
     );
+    problem.feasible_ris.assign(problem.uds.size(), {});
 
     for (size_t u = 0; u < problem.uds.size(); ++u) {
         for (size_t r = 0; r < problem.riss.size(); ++r) {
@@ -124,6 +132,9 @@ ProblemData load_problem(std::istream& in) {
                                  : ris.coverage_UDs.count(problem.uds[u].id) > 0;
             if (!can_use) continue;
             problem.cost_table[u][r] = compute_cost(problem, problem.uds[u], ris);
+            if (std::isfinite(problem.cost_table[u][r])) {
+                problem.feasible_ris[u].push_back(static_cast<int>(r));
+            }
         }
     }
 

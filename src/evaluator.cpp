@@ -52,7 +52,8 @@ Candidate best_available_candidate(
     const std::vector<bool>& ris_available
 ) {
     Candidate best = make_candidate(problem, ud_index, -1, cost_penalty);
-    for (int ris_idx = 0; ris_idx < problem.actual_ris_count; ++ris_idx) {
+    for (int ris_idx : problem.feasible_ris[ud_index]) {
+        if (ris_idx >= problem.actual_ris_count) continue;  // skip direct shadow
         if (!ris_available[ris_idx]) continue;
         Candidate cand = make_candidate(problem, ud_index, ris_idx, cost_penalty);
         if (better_candidate(cand, best)) {
@@ -388,6 +389,32 @@ AssignmentResult evaluate_priority(
             used_cost,
             params.cost_penalty
         );
+    }
+    // 最後防線：若仍然超額，持續丟掉耗能最高的服務直到非負。
+    int safety_drop = 0;
+    while (result.remaining_qubits < -EPS && safety_drop < static_cast<int>(ud_count)) {
+        ++safety_drop;
+        int victim = -1;
+        double worst_cost = -1.0;
+        for (size_t idx = 0; idx < ud_count; ++idx) {
+            if (result.chosen_ris_index[idx] == -2) continue;
+            if (used_cost[idx] > worst_cost) {
+                worst_cost = used_cost[idx];
+                victim = static_cast<int>(idx);
+            }
+        }
+        if (victim == -1) break;
+        unassign_ud(
+            result,
+            victim,
+            problem,
+            ris_available,
+            ris_owner,
+            used_cost
+        );
+    }
+    if (result.remaining_qubits < 0.0 && result.remaining_qubits > -EPS) {
+        result.remaining_qubits = 0.0;
     }
 
     result.assignments.clear();

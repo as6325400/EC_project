@@ -45,6 +45,7 @@ struct ProblemData {
     int actual_ris_count{};
     int direct_ris_index{};
     std::vector<std::vector<double>> cost_table;
+    std::vector<std::vector<int>> feasible_ris;  // per UD, list of RIS indices (includes direct if usable)
 };
 
 ProblemData load_problem(std::istream& in);

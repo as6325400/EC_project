@@ -1,5 +1,5 @@
 CXX := g++
-CXXFLAGS := -std=c++17 -O2 -pipe -Wall -Wextra -Wshadow -Wconversion
+CXXFLAGS := -std=c++17 -O2 -pipe -Wall -Wextra -Wshadow -Wconversion -fopenmp
 
 SRC_DIR := src
 VALIDATE_DIR := validate

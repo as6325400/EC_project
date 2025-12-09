@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <random>
+#include <thread>
+#include <omp.h>
 
 namespace {
 
@@ -13,6 +15,16 @@ struct Individual {
 
 std::mt19937_64& global_rng() {
     static std::mt19937_64 rng(std::random_device{}());
+    return rng;
+}
+
+std::mt19937_64& thread_rng() {
+    thread_local std::mt19937_64 rng(
+        std::random_device{}()
+        ^ static_cast<std::mt19937_64::result_type>(
+            std::hash<std::thread::id>{}(std::this_thread::get_id())
+        )
+    );
     return rng;
 }
 
@@ -127,6 +139,24 @@ double random_penalty(const EAConfig& config, std::mt19937_64& rng) {
     return dist(rng);
 }
 
+Individual seed_from_cost(
+    const ProblemData& problem,
+    const EAConfig& config
+) {
+    std::vector<double> pri(problem.uds.size(), 0.0);
+    const double cp = 0.5 * (config.min_cost_penalty + config.max_cost_penalty);
+    for (size_t i = 0; i < problem.uds.size(); ++i) {
+        double best_cost = std::numeric_limits<double>::infinity();
+        for (int ris_idx : problem.feasible_ris[i]) {
+            const double c = problem.cost_table[i][ris_idx];
+            if (std::isfinite(c) && c < best_cost) best_cost = c;
+        }
+        pri[i] = static_cast<double>(problem.uds[i].profit)
+                 - cp * (std::isfinite(best_cost) ? best_cost : 1e6);
+    }
+    return evaluate_individual(problem, std::move(pri), cp, config);
+}
+
 }  // namespace
 
 AssignmentResult run_evolutionary_solver(
@@ -138,11 +168,11 @@ AssignmentResult run_evolutionary_solver(
     }
 
     auto& rng = global_rng();
-    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
 
     std::vector<Individual> population;
     population.reserve(config.population_size);
-    for (int i = 0; i < config.population_size; ++i) {
+    const int seed_count = std::max(1, config.population_size / 20);
+    for (int i = 0; i < config.population_size - seed_count; ++i) {
         population.push_back(
             evaluate_individual(
                 problem,
@@ -151,6 +181,9 @@ AssignmentResult run_evolutionary_solver(
                 config
             )
         );
+    }
+    for (int i = 0; i < seed_count; ++i) {
+        population.push_back(seed_from_cost(problem, config));
     }
 
     Individual best = *std::max_element(
@@ -162,59 +195,41 @@ AssignmentResult run_evolutionary_solver(
     );
 
     for (int gen = 0; gen < config.generations; ++gen) {
-        std::vector<Individual> next_population;
-        next_population.reserve(config.population_size);
+        std::vector<Individual> next_population(config.population_size);
+        next_population[0] = best;  // Elitism
 
-        // Elitism
-        next_population.push_back(best);
+#pragma omp parallel for schedule(static)
+        for (int idx = 1; idx < config.population_size; ++idx) {
+            auto& local_rng = thread_rng();
+            std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
+            std::uniform_real_distribution<double> alpha_dist(0.0, 1.0);
 
-        while (static_cast<int>(next_population.size()) < config.population_size) {
-            const Individual& parent1 = tournament_select(population, 3, rng);
-            const Individual& parent2 = tournament_select(population, 3, rng);
+            const Individual& parent1 = tournament_select(population, 3, local_rng);
+            const Individual& parent2 = tournament_select(population, 3, local_rng);
 
-            std::vector<double> child1 = parent1.priority;
-            std::vector<double> child2 = parent2.priority;
-            double child_penalty1 = parent1.cost_penalty;
-            double child_penalty2 = parent2.cost_penalty;
+            Individual child;
+            child.priority = parent1.priority;
+            child.cost_penalty = parent1.cost_penalty;
 
-            if (prob_dist(rng) <= config.crossover_rate) {
-                std::uniform_real_distribution<double> alpha_dist(0.0, 1.0);
-                const double alpha = alpha_dist(rng);
-                for (size_t i = 0; i < child1.size(); ++i) {
+            if (prob_dist(local_rng) <= config.crossover_rate) {
+                const double alpha = alpha_dist(local_rng);
+                for (size_t i = 0; i < child.priority.size(); ++i) {
                     const double a = parent1.priority[i];
                     const double b = parent2.priority[i];
-                    child1[i] = alpha * a + (1.0 - alpha) * b;
-                    child2[i] = (1.0 - alpha) * a + alpha * b;
+                    child.priority[i] = alpha * a + (1.0 - alpha) * b;
                 }
-                child_penalty1 = alpha * parent1.cost_penalty
-                                 + (1.0 - alpha) * parent2.cost_penalty;
-                child_penalty2 = (1.0 - alpha) * parent1.cost_penalty
-                                 + alpha * parent2.cost_penalty;
+                child.cost_penalty = alpha * parent1.cost_penalty
+                                     + (1.0 - alpha) * parent2.cost_penalty;
             }
 
-            Individual offspring1;
-            offspring1.priority = std::move(child1);
-            offspring1.cost_penalty = child_penalty1;
-            Individual offspring2;
-            offspring2.priority = std::move(child2);
-            offspring2.cost_penalty = child_penalty2;
+            mutate_individual(child, problem, config, local_rng);
 
-            mutate_individual(offspring1, problem, config, rng);
-            mutate_individual(offspring2, problem, config, rng);
+            EvaluationParams params;
+            params.cost_penalty = child.cost_penalty;
+            params.usage_penalty = config.usage_penalty;
+            child.result = evaluate_priority(problem, child.priority, params);
 
-            EvaluationParams params1;
-            params1.cost_penalty = offspring1.cost_penalty;
-            params1.usage_penalty = config.usage_penalty;
-            EvaluationParams params2;
-            params2.cost_penalty = offspring2.cost_penalty;
-            params2.usage_penalty = config.usage_penalty;
-            offspring1.result = evaluate_priority(problem, offspring1.priority, params1);
-            offspring2.result = evaluate_priority(problem, offspring2.priority, params2);
-
-            next_population.push_back(std::move(offspring1));
-            if (static_cast<int>(next_population.size()) < config.population_size) {
-                next_population.push_back(std::move(offspring2));
-            }
+            next_population[idx] = std::move(child);
         }
 
         // 對當代最優的少數個體做局部搜尋微調。
