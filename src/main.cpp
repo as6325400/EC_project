@@ -51,14 +51,14 @@ double Pe(int UID, int RID){
   double d;
   if(RID == -1) d = dis(UD_Array[UID], qan);
   else d = dis(qan, RIS_Array[RID]) + dis(RIS_Array[RID], UD_Array[UID]);
-  return exp(-1 * alpha * 1e-3 * d);
+  return exp(-1 * alpha * d);
 }
 
 double Fe(int UID, int RID){
   double d;
   if(RID == -1) d = dis(UD_Array[UID], qan);
   else d = dis(qan, RIS_Array[RID]) + dis(RIS_Array[RID], UD_Array[UID]);
-  return 0.5 + 0.5 * exp(-1 * ::beta * 1e-3 * d);
+  return 0.5 + 0.5 * exp(-1 * ::beta * d);
 }
 
 double Pp(double f1, double f2){
@@ -127,18 +127,25 @@ int main(){
 
   int accept_UD = 0;
   vector<pair<int, int>> accept_UD_list;
-
+  vector<bool> used(RISs, false);
   for(int i = 0; i < UDs; i++){
     auto ud = UD_Array[i];
-    if(!ud.can_coverage) continue;
     double cost = 1e18;
+    int min_cost_id = -1;
     for(int j = -1; j < RISs; j++){
-      cost = min(cost, S(i, j));
+      if(j == -1 and !ud.can_coverage) continue;
+      if(j >= 0 and RIS_Array[j].coverage_UDs.count(i) == 0) continue;
+      if(j >= 0 and used[j]) continue;
+      if(S(i, j) < cost){
+        cost = S(i, j);
+        min_cost_id = j;
+      }
     }
     if(qan.ent_gen_rate >= ceil(cost)){
       accept_UD++;
       qan.ent_gen_rate -= ceil(cost);
-      accept_UD_list.push_back({i, -1});
+      accept_UD_list.push_back({i, min_cost_id});
+      if(min_cost_id != -1) used[min_cost_id] = true;
     }
   }
 
