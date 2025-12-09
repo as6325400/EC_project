@@ -10,9 +10,16 @@ struct AssignmentResult {
     double total_profit{};
     double fitness{};
     double remaining_qubits{};
+    double used_qubits{};
+};
+
+struct EvaluationParams {
+    double cost_penalty = 0.0;
+    double usage_penalty = 0.0;
 };
 
 AssignmentResult evaluate_priority(
     const ProblemData& problem,
-    const std::vector<double>& priority
+    const std::vector<double>& priority,
+    const EvaluationParams& params
 );

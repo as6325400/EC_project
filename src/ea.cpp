@@ -7,6 +7,7 @@ namespace {
 
 struct Individual {
     std::vector<double> priority;
+    double cost_penalty{};
     AssignmentResult result;
 };
 
@@ -21,11 +22,17 @@ double gene_sigma(double base_sigma, const UD& ud) {
 
 Individual evaluate_individual(
     const ProblemData& problem,
-    std::vector<double> priority
+    std::vector<double> priority,
+    double cost_penalty,
+    const EAConfig& config
 ) {
     Individual ind;
     ind.priority = std::move(priority);
-    ind.result = evaluate_priority(problem, ind.priority);
+    ind.cost_penalty = cost_penalty;
+    EvaluationParams params;
+    params.cost_penalty = cost_penalty;
+    params.usage_penalty = config.usage_penalty;
+    ind.result = evaluate_priority(problem, ind.priority, params);
     return ind;
 }
 
@@ -59,6 +66,14 @@ void mutate_individual(
             ind.priority[i] += gauss(rng) * sigma;
         }
     }
+    if (prob_dist(rng) <= config.mutation_rate) {
+        ind.cost_penalty += gauss(rng) * config.penalty_mutation_sigma;
+        ind.cost_penalty = std::clamp(
+            ind.cost_penalty,
+            config.min_cost_penalty,
+            config.max_cost_penalty
+        );
+    }
 }
 
 std::vector<double> random_priority(const ProblemData& problem, std::mt19937_64& rng) {
@@ -68,6 +83,14 @@ std::vector<double> random_priority(const ProblemData& problem, std::mt19937_64&
         genes[i] = static_cast<double>(problem.uds[i].profit) + dist(rng);
     }
     return genes;
+}
+
+double random_penalty(const EAConfig& config, std::mt19937_64& rng) {
+    std::uniform_real_distribution<double> dist(
+        config.min_cost_penalty,
+        config.max_cost_penalty
+    );
+    return dist(rng);
 }
 
 }  // namespace
@@ -86,7 +109,14 @@ AssignmentResult run_evolutionary_solver(
     std::vector<Individual> population;
     population.reserve(config.population_size);
     for (int i = 0; i < config.population_size; ++i) {
-        population.push_back(evaluate_individual(problem, random_priority(problem, rng)));
+        population.push_back(
+            evaluate_individual(
+                problem,
+                random_priority(problem, rng),
+                random_penalty(config, rng),
+                config
+            )
+        );
     }
 
     Individual best = *std::max_element(
@@ -110,6 +140,8 @@ AssignmentResult run_evolutionary_solver(
 
             std::vector<double> child1 = parent1.priority;
             std::vector<double> child2 = parent2.priority;
+            double child_penalty1 = parent1.cost_penalty;
+            double child_penalty2 = parent2.cost_penalty;
 
             if (prob_dist(rng) <= config.crossover_rate) {
                 std::uniform_real_distribution<double> alpha_dist(0.0, 1.0);
@@ -120,18 +152,30 @@ AssignmentResult run_evolutionary_solver(
                     child1[i] = alpha * a + (1.0 - alpha) * b;
                     child2[i] = (1.0 - alpha) * a + alpha * b;
                 }
+                child_penalty1 = alpha * parent1.cost_penalty
+                                 + (1.0 - alpha) * parent2.cost_penalty;
+                child_penalty2 = (1.0 - alpha) * parent1.cost_penalty
+                                 + alpha * parent2.cost_penalty;
             }
 
             Individual offspring1;
             offspring1.priority = std::move(child1);
+            offspring1.cost_penalty = child_penalty1;
             Individual offspring2;
             offspring2.priority = std::move(child2);
+            offspring2.cost_penalty = child_penalty2;
 
             mutate_individual(offspring1, problem, config, rng);
             mutate_individual(offspring2, problem, config, rng);
 
-            offspring1.result = evaluate_priority(problem, offspring1.priority);
-            offspring2.result = evaluate_priority(problem, offspring2.priority);
+            EvaluationParams params1;
+            params1.cost_penalty = offspring1.cost_penalty;
+            params1.usage_penalty = config.usage_penalty;
+            EvaluationParams params2;
+            params2.cost_penalty = offspring2.cost_penalty;
+            params2.usage_penalty = config.usage_penalty;
+            offspring1.result = evaluate_priority(problem, offspring1.priority, params1);
+            offspring2.result = evaluate_priority(problem, offspring2.priority, params2);
 
             next_population.push_back(std::move(offspring1));
             if (static_cast<int>(next_population.size()) < config.population_size) {
