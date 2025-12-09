@@ -66,6 +66,15 @@ void mutate_individual(
             ind.priority[i] += gauss(rng) * sigma;
         }
     }
+    // 交換兩個基因以探索排序空間。
+    if (prob_dist(rng) <= config.mutation_rate) {
+        std::uniform_int_distribution<int> idx_dist(0, static_cast<int>(ind.priority.size()) - 1);
+        int a = idx_dist(rng);
+        int b = idx_dist(rng);
+        if (a != b) {
+            std::swap(ind.priority[a], ind.priority[b]);
+        }
+    }
     if (prob_dist(rng) <= config.mutation_rate) {
         ind.cost_penalty += gauss(rng) * config.penalty_mutation_sigma;
         ind.cost_penalty = std::clamp(
@@ -73,6 +82,31 @@ void mutate_individual(
             config.min_cost_penalty,
             config.max_cost_penalty
         );
+    }
+}
+
+void local_search_swap(
+    Individual& ind,
+    const ProblemData& problem,
+    const EAConfig& config,
+    std::mt19937_64& rng
+) {
+    // 簡單爬山：嘗試少量交換並保留更佳解。
+    std::uniform_int_distribution<int> idx_dist(0, static_cast<int>(ind.priority.size()) - 1);
+    for (int step = 0; step < 2; ++step) {
+        int a = idx_dist(rng);
+        int b = idx_dist(rng);
+        if (a == b) continue;
+        std::swap(ind.priority[a], ind.priority[b]);
+        EvaluationParams params;
+        params.cost_penalty = ind.cost_penalty;
+        params.usage_penalty = config.usage_penalty;
+        AssignmentResult candidate = evaluate_priority(problem, ind.priority, params);
+        if (candidate.fitness > ind.result.fitness) {
+            ind.result = std::move(candidate);
+        } else {
+            std::swap(ind.priority[a], ind.priority[b]);
+        }
     }
 }
 
@@ -181,6 +215,20 @@ AssignmentResult run_evolutionary_solver(
             if (static_cast<int>(next_population.size()) < config.population_size) {
                 next_population.push_back(std::move(offspring2));
             }
+        }
+
+        // 對當代最優的少數個體做局部搜尋微調。
+        const int elite_ls = std::min(3, static_cast<int>(next_population.size()));
+        std::partial_sort(
+            next_population.begin(),
+            next_population.begin() + elite_ls,
+            next_population.end(),
+            [](const Individual& lhs, const Individual& rhs) {
+                return lhs.result.fitness > rhs.result.fitness;
+            }
+        );
+        for (int i = 0; i < elite_ls; ++i) {
+            local_search_swap(next_population[i], problem, config, rng);
         }
 
         population = std::move(next_population);

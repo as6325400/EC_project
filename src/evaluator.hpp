@@ -7,6 +7,7 @@
 struct AssignmentResult {
     std::vector<std::pair<int, int>> assignments;  // <UD id, RIS id/-1>
     std::vector<int> chosen_ris_index;             // per UD index, -2 unserved, -1 direct, >=0 specific RIS
+    std::vector<double> used_cost_per_ud;          // consumed qubits per UD (0 if unserved)
     double total_profit{};
     double fitness{};
     double remaining_qubits{};

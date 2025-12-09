@@ -8,6 +8,7 @@
 namespace {
 
 constexpr double EPS = 1e-9;
+constexpr int MAX_REPAIR_ITER = 256;
 
 struct Candidate {
     int ris_index{-2};  // -1 direct, >=0 actual RIS index
@@ -102,6 +103,122 @@ void unassign_ud(
     used_cost[ud_index] = 0.0;
 }
 
+bool downgrade_ris_to_direct(
+    AssignmentResult& result,
+    int ud_index,
+    const ProblemData& problem,
+    std::vector<bool>& ris_available,
+    std::vector<int>& ris_owner,
+    std::vector<double>& used_cost,
+    double cost_penalty
+) {
+    const int ris_idx = result.chosen_ris_index[ud_index];
+    if (ris_idx < 0) return false;
+    if (problem.direct_ris_index < 0) return false;
+    Candidate direct = make_candidate(
+        problem,
+        ud_index,
+        -1,
+        cost_penalty
+    );
+    if (!std::isfinite(direct.cost)) return false;
+    if (direct.cost - used_cost[ud_index] >= -EPS) {
+        // Only downgrade if it saves qubits.
+        return false;
+    }
+    unassign_ud(
+        result,
+        ud_index,
+        problem,
+        ris_available,
+        ris_owner,
+        used_cost
+    );
+    assign_ud(
+        result,
+        ud_index,
+        direct,
+        problem,
+        ris_available,
+        ris_owner,
+        used_cost
+    );
+    return true;
+}
+
+void repair_overbudget(
+    AssignmentResult& result,
+    const ProblemData& problem,
+    std::vector<bool>& ris_available,
+    std::vector<int>& ris_owner,
+    std::vector<double>& used_cost,
+    double cost_penalty
+) {
+    int iter = 0;
+    while (result.remaining_qubits < -EPS && iter < MAX_REPAIR_ITER) {
+        ++iter;
+        bool repaired = false;
+
+        // 1) Try downgrading RIS users to direct links to save qubits.
+        double best_saving = 0.0;
+        int best_ud = -1;
+        for (size_t idx = 0; idx < problem.uds.size(); ++idx) {
+            const int choice = result.chosen_ris_index[idx];
+            if (choice < 0) continue;
+            if (problem.direct_ris_index < 0) continue;
+            const double direct_cost = problem.cost_table[idx][problem.direct_ris_index];
+            if (!std::isfinite(direct_cost)) continue;
+            const double saving = used_cost[idx] - direct_cost;
+            if (saving > best_saving + EPS) {
+                best_saving = saving;
+                best_ud = static_cast<int>(idx);
+            }
+        }
+        if (best_ud != -1) {
+            repaired = downgrade_ris_to_direct(
+                result,
+                best_ud,
+                problem,
+                ris_available,
+                ris_owner,
+                used_cost,
+                cost_penalty
+            );
+            if (repaired && result.remaining_qubits >= -EPS) continue;
+        }
+
+        // 2) Drop the worst profit-per-cost UD to free qubits.
+        int victim = -1;
+        double worst_ratio = std::numeric_limits<double>::infinity();
+        for (size_t idx = 0; idx < problem.uds.size(); ++idx) {
+            if (result.chosen_ris_index[idx] == -2) continue;
+            if (used_cost[idx] <= EPS) continue;
+            const double ratio = static_cast<double>(problem.uds[idx].profit)
+                                 / (used_cost[idx] + EPS);
+            if (ratio < worst_ratio) {
+                worst_ratio = ratio;
+                victim = static_cast<int>(idx);
+            }
+        }
+        if (victim != -1) {
+            unassign_ud(
+                result,
+                victim,
+                problem,
+                ris_available,
+                ris_owner,
+                used_cost
+            );
+            repaired = true;
+            continue;
+        }
+
+        if (!repaired) {
+            break;
+        }
+    }
+}
+
 }  // namespace
 
 AssignmentResult evaluate_priority(
@@ -112,6 +229,7 @@ AssignmentResult evaluate_priority(
     AssignmentResult result;
     const size_t ud_count = problem.uds.size();
     result.chosen_ris_index.assign(ud_count, -2);
+    result.used_cost_per_ud.assign(ud_count, 0.0);
     result.remaining_qubits = problem.qan.ent_gen_rate;
 
     std::vector<int> order(ud_count);
@@ -140,7 +258,9 @@ AssignmentResult evaluate_priority(
         if (!std::isfinite(best.cost)) {
             continue;
         }
-        if (best.cost - result.remaining_qubits > EPS) {
+        // 允許超額占用，稍後由修復器處理。
+        if (best.cost - result.remaining_qubits > EPS
+            && best.score <= 0.0) {
             continue;
         }
         assign_ud(
@@ -258,6 +378,18 @@ AssignmentResult evaluate_priority(
         }
     }
 
+    // 能量超標則嘗試修復：先降級 RIS->直連，再丟掉最差性價比的。
+    if (result.remaining_qubits < -EPS) {
+        repair_overbudget(
+            result,
+            problem,
+            ris_available,
+            ris_owner,
+            used_cost,
+            params.cost_penalty
+        );
+    }
+
     result.assignments.clear();
     for (size_t idx = 0; idx < ud_count; ++idx) {
         const int choice = result.chosen_ris_index[idx];
@@ -276,6 +408,11 @@ AssignmentResult evaluate_priority(
     if (result.used_qubits < 0.0) {
         result.used_qubits = 0.0;
     }
+    // 若仍有極小負值，剪成 0，避免 qubit_num exceed 類錯誤。
+    if (result.remaining_qubits < 0.0 && result.remaining_qubits > -EPS) {
+        result.remaining_qubits = 0.0;
+    }
+    result.used_cost_per_ud = used_cost;
     result.fitness = result.total_profit
                      - params.usage_penalty * result.used_qubits;
     return result;
