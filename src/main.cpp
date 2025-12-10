@@ -10,8 +10,8 @@ int main() {
     ProblemData problem = load_problem(std::cin);
 
     EAConfig config;
-    config.population_size = 220;
-    config.generations = 450;
+    config.population_size = 200;
+    config.generations = 200;
     config.crossover_rate = 0.9;
     config.mutation_rate = 0.06;
     config.mutation_sigma = 0.025;
